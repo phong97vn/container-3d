@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Container Packing</title>
+<style>
+body{margin:0;overflow:hidden;font-family:Arial}
+#ui{
+ position:absolute;top:10px;left:10px;z-index:10;
+ background:#fff;padding:8px;border-radius:6px
+}
+select,input,button{width:160px;margin:4px 0}
+#percent{font-weight:bold;margin:6px 0}
+canvas{border:1px solid #333}
+</style>
+</head>
+<body>
+
+<div id="ui">
+<select id="lang" onchange="applyLang()">
+ <option value="vi">🇻🇳 Tiếng Việt</option>
+ <option value="en">🇺🇸 English</option>
+ <option value="zh">🇨🇳 中文</option>
+</select>
+
+<select id="cont">
+ <option value="20">20ft</option>
+ <option value="40">40ft</option>
+</select>
+
+<input id="l" type="number" step="0.1">
+<input id="w" type="number" step="0.1">
+<input id="h" type="number" step="0.1">
+<input id="q" type="number">
+
+<button id="btnAdd" onclick="addItem()">+</button>
+<button id="btnPack" onclick="pack()">▶</button>
+
+<div id="percent"></div>
+<canvas id="plan2d" width="300" height="180"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+/* ===== LANGUAGE ===== */
+const LANG={
+ vi:{add:"➕ Thêm kiện",pack:"🚢 Xếp cont",filled:"📊 Đầy container",
+     len:"Dài (m)",wid:"Rộng (m)",hei:"Cao (m)",qty:"Số kiện",
+     c20:"Container 20ft",c40:"Container 40ft"},
+ en:{add:"➕ Add box",pack:"🚢 Pack container",filled:"📊 Container filled",
+     len:"Length (m)",wid:"Width (m)",hei:"Height (m)",qty:"Quantity",
+     c20:"Container 20ft",c40:"Container 40ft"},
+ zh:{add:"➕ 添加箱子",pack:"🚢 装柜",filled:"📊 集装箱装载率",
+     len:"长度 (米)",wid:"宽度 (米)",hei:"高度 (米)",qty:"数量",
+     c20:"20英尺集装箱",c40:"40英尺集装箱"}
+};
+
+/* ===== CONFIG ===== */
+const SCALE=10;
+let items=[], freeSpaces=[], placed2D=[];
+let usedVol=0, contVol=0;
+
+/* ===== THREE ===== */
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xf2f2f2);
+
+const cam=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,1,3000);
+cam.position.set(130,90,130);
+
+const ren=new THREE.WebGLRenderer({antialias:true});
+ren.setSize(innerWidth,innerHeight);
+ren.setPixelRatio(devicePixelRatio);
+document.body.appendChild(ren.domElement);
+
+new THREE.OrbitControls(cam,ren.domElement);
+scene.add(new THREE.AmbientLight(0xffffff,0.9));
+const light=new THREE.DirectionalLight(0xffffff,0.6);
+light.position.set(120,220,120);
+scene.add(light);
+
+/* ===== UTILS ===== */
+const rots=([a,b,c])=>[
+ [a,b,c],[a,c,b],[b,a,c],[b,c,a],[c,a,b],[c,b,a]
+];
+
+function updatePercent(){
+ if(!contVol) return;
+ const p=(usedVol/contVol)*100;
+ percent.innerHTML=`${LANG[lang.value].filled}: <b>${p.toFixed(1)}%</b>`;
+}
+
+/* ===== UI LANGUAGE ===== */
+function applyLang(){
+ const L=LANG[lang.value];
+ btnAdd.innerText=L.add;
+ btnPack.innerText=L.pack;
+ l.placeholder=L.len;
+ w.placeholder=L.wid;
+ h.placeholder=L.hei;
+ q.placeholder=L.qty;
+ cont.options[0].text=L.c20;
+ cont.options[1].text=L.c40;
+ updatePercent();
+}
+
+/* ===== CONTAINER ===== */
+function drawContainer(){
+ scene.children=scene.children.filter(o=>!o.userData.cont);
+
+ const is20=cont.value==="20";
+ const L=(is20?5.9:12.03)*SCALE, W=2.35*SCALE, H=2.39*SCALE;
+
+ contVol=L*W*H; usedVol=0; placed2D=[];
+ updatePercent(); drawPlan2D();
+
+ const m=new THREE.Mesh(
+  new THREE.BoxGeometry(L,W,H),
+  new THREE.MeshBasicMaterial({wireframe:true})
+ );
+ m.position.y=H/2; m.userData.cont=true;
+ scene.add(m);
+
+ freeSpaces=[{x:0,y:0,z:0,L,W,H}];
+}
+
+/* ===== ADD ITEM ===== */
+function addItem(){
+ if(!l.value||!w.value||!h.value||!q.value) return;
+ items.push({d:[l.value*SCALE,w.value*SCALE,h.value*SCALE],q:+q.value});
+ l.value=w.value=h.value=q.value="";
+}
+
+/* ===== PACKING AI ===== */
+function pack(){
+ drawContainer();
+ let boxes=[];
+ items.forEach(i=>{for(let k=0;k<i.q;k++) boxes.push(i.d);});
+ boxes.sort((a,b)=>b[0]*b[1]*b[2]-a[0]*a[1]*a[2]);
+
+ boxes.forEach(d=>{
+  let best=null;
+  freeSpaces.forEach(f=>{
+   rots(d).forEach(r=>{
+    if(r[0]<=f.L&&r[1]<=f.W&&r[2]<=f.H){
+     const waste=f.L*f.W*f.H-r[0]*r[1]*r[2];
+     if(!best||waste<best.w) best={f,r,w:waste};
+    }
+   });
+  });
+  if(best){
+   placeBox(best.f,best.r);
+   freeSpaces=freeSpaces.filter(x=>x!==best.f);
+   split(best.f,best.r);
+  }
+ });
+}
+
+/* ===== PLACE & SPLIT ===== */
+function placeBox(f,[l,w,h]){
+ const b=new THREE.Mesh(
+  new THREE.BoxGeometry(l,w,h),
+  new THREE.MeshLambertMaterial({color:Math.random()*0xffffff})
+ );
+ b.position.set(f.x+l/2,f.y+h/2,f.z+w/2);
+ scene.add(b);
+
+ usedVol+=l*w*h;
+ placed2D.push({x:f.x,z:f.z,l,w});
+ updatePercent(); drawPlan2D();
+}
+
+function split(f,[l,w,h]){
+ freeSpaces.push(
+  {x:f.x+l,y:f.y,z:f.z,L:f.L-l,W:w,H:h},
+  {x:f.x,y:f.y,z:f.z+w,L:f.L,W:f.W-w,H:h},
+  {x:f.x,y:f.y+h,z:f.z,L:f.L,W:f.W,H:f.H-h}
+ );
+}
+
+/* ===== 2D PLAN ===== */
+function drawPlan2D(){
+ const c=plan2d,ctx=c.getContext("2d");
+ ctx.clearRect(0,0,c.width,c.height);
+
+ const is20=cont.value==="20";
+ const L=(is20?5.9:12.03)*SCALE, W=2.35*SCALE;
+ const sx=c.width/L, sz=c.height/W;
+
+ ctx.strokeRect(0,0,c.width,c.height);
+ placed2D.forEach(b=>{
+  ctx.fillStyle=`hsl(${Math.random()*360},70%,70%)`;
+  ctx.fillRect(b.x*sx,b.z*sz,b.l*sx,b.w*sz);
+  ctx.strokeRect(b.x*sx,b.z*sz,b.l*sx,b.w*sz);
+ });
+}
+
+/* ===== LOOP ===== */
+applyLang();
+(function ani(){requestAnimationFrame(ani);ren.render(scene,cam)})();
+</script>
+</body>
+</html>
